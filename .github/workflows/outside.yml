@@ -1,0 +1,12 @@
+# Disposable test: another repository calls the public shared workflow.
+name: outside
+on:
+  push:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  d-other-repo:
+    uses: sh4i-yurei/iac-oidc-test/.github/workflows/dns.yml@main
+    with:
+      label: "D: a different repository calls the public workflow at main (expect REFUSED)"
