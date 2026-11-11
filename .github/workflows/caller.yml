@@ -1,0 +1,15 @@
+# Disposable: a site's caller, calling the reusable workflow at main on several events.
+name: caller
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+permissions: {}
+jobs:
+  call:
+    permissions:
+      id-token: write
+    uses: sh4i-yurei/iac-oidc-caller/.github/workflows/short.yml@main
