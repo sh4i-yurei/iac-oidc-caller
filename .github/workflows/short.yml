@@ -1,0 +1,63 @@
+# Disposable: the reusable workflow, like keepbreathing-infra's short-lived.yml.
+name: short
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  signin:
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+    timeout-minutes: 45
+    steps:
+      - name: Sign in to a throwaway OpenBao with this job's own token
+        run: |
+          set -euo pipefail
+          docker run -d --name bao -p 8200:8200 quay.io/openbao/openbao@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f server -dev -dev-root-token-id=root -dev-listen-address=0.0.0.0:8200 >/dev/null
+          for i in $(seq 60); do curl -sf http://127.0.0.1:8200/v1/sys/health >/dev/null && break; sleep 1; done
+          B=http://127.0.0.1:8200/v1
+          R=(-H "X-Vault-Token: root")
+          docker exec bao bao version || true
+          curl -sf "${R[@]}" -X POST $B/sys/auth/jwt -d '{"type":"jwt"}'
+          curl -sf "${R[@]}" -X POST $B/auth/jwt/config -d '{"oidc_discovery_url":"https://token.actions.githubusercontent.com","bound_issuer":"https://token.actions.githubusercontent.com"}'
+          oidc() { curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://openbao.test" | jq -r .value; }
+          claims() { local p; p=$(cut -d. -f2 <<<"$1" | tr '_-' '/+'); while (( ${#p} % 4 )); do p+="="; done; base64 -d <<<"$p" | jq -c '{event_name, ref, repository_id, workflow_ref, job_workflow_ref}'; }
+          role() { jq -n --arg n "$1" --argjson c "$2" --arg ttl "$3" '{role_type:"jwt", user_claim:"sub", bound_audiences:["https://openbao.test"], bound_claims_type:"string", bound_claims:$c, token_policies:["default"], token_ttl:$ttl, token_max_ttl:$ttl}' | curl -sf "${R[@]}" -X POST $B/auth/jwt/role/$1 -d @- ; }
+          login() { local out code; out=$(jq -n --arg r "$1" --arg t "$2" '{role:$r, jwt:$t}' | curl -s -w '\n%{http_code}' -X POST $B/auth/jwt/login -d @-); code=$(tail -1 <<<"$out"); echo "RESULT role=$1 http=$code $(head -n -1 <<<"$out" | jq -c '.errors // {policies: .auth.policies, ttl: .auth.lease_duration}')"; LAST_TOKEN=$(head -n -1 <<<"$out" | jq -r '.auth.client_token // empty'); }
+
+          role short-today '{"repository_id": "1450068758", "job_workflow_ref": "sh4i-yurei/iac-oidc-caller/.github/workflows/short.yml@refs/heads/main"}' 1800
+          role short-events '{"repository_id": "1450068758", "job_workflow_ref": "sh4i-yurei/iac-oidc-caller/.github/workflows/short.yml@refs/heads/main", "event_name": ["pull_request", "schedule"]}' 1800
+          T=$(oidc); echo "CLAIMS $(claims "$T")"
+          login short-today "$T"
+          login short-events "$T"
+  relogin:
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+    timeout-minutes: 45
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Sign in to a throwaway OpenBao with this job's own token
+        run: |
+          set -euo pipefail
+          docker run -d --name bao -p 8200:8200 quay.io/openbao/openbao@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f server -dev -dev-root-token-id=root -dev-listen-address=0.0.0.0:8200 >/dev/null
+          for i in $(seq 60); do curl -sf http://127.0.0.1:8200/v1/sys/health >/dev/null && break; sleep 1; done
+          B=http://127.0.0.1:8200/v1
+          R=(-H "X-Vault-Token: root")
+          docker exec bao bao version || true
+          curl -sf "${R[@]}" -X POST $B/sys/auth/jwt -d '{"type":"jwt"}'
+          curl -sf "${R[@]}" -X POST $B/auth/jwt/config -d '{"oidc_discovery_url":"https://token.actions.githubusercontent.com","bound_issuer":"https://token.actions.githubusercontent.com"}'
+          oidc() { curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://openbao.test" | jq -r .value; }
+          claims() { local p; p=$(cut -d. -f2 <<<"$1" | tr '_-' '/+'); while (( ${#p} % 4 )); do p+="="; done; base64 -d <<<"$p" | jq -c '{event_name, ref, repository_id, workflow_ref, job_workflow_ref}'; }
+          role() { jq -n --arg n "$1" --argjson c "$2" --arg ttl "$3" '{role_type:"jwt", user_claim:"sub", bound_audiences:["https://openbao.test"], bound_claims_type:"string", bound_claims:$c, token_policies:["default"], token_ttl:$ttl, token_max_ttl:$ttl}' | curl -sf "${R[@]}" -X POST $B/auth/jwt/role/$1 -d @- ; }
+          login() { local out code; out=$(jq -n --arg r "$1" --arg t "$2" '{role:$r, jwt:$t}' | curl -s -w '\n%{http_code}' -X POST $B/auth/jwt/login -d @-); code=$(tail -1 <<<"$out"); echo "RESULT role=$1 http=$code $(head -n -1 <<<"$out" | jq -c '.errors // {policies: .auth.policies, ttl: .auth.lease_duration}')"; LAST_TOKEN=$(head -n -1 <<<"$out" | jq -r '.auth.client_token // empty'); }
+
+          role short-events '{"repository_id": "1450068758", "job_workflow_ref": "sh4i-yurei/iac-oidc-caller/.github/workflows/short.yml@refs/heads/main", "event_name": ["pull_request", "schedule"]}' 1800
+          T=$(oidc); echo "CLAIMS $(claims "$T")"
+          login short-events "$T"; FIRST=$LAST_TOKEN
+          echo "first token lookup-self: $(curl -s -o /dev/null -w %{http_code} -H "X-Vault-Token: $FIRST" $B/auth/token/lookup-self)"
+          echo "sleeping 1860 s, past the 1800 s token"; sleep 1860
+          echo "first token lookup-self after 1860 s: $(curl -s -o /dev/null -w %{http_code} -H "X-Vault-Token: $FIRST" $B/auth/token/lookup-self)"
+          T2=$(oidc); echo "CLAIMS second token $(claims "$T2")"
+          login short-events "$T2"; SECOND=$LAST_TOKEN
+          echo "second token lookup-self: $(curl -s -o /dev/null -w %{http_code} -H "X-Vault-Token: $SECOND" $B/auth/token/lookup-self)"
